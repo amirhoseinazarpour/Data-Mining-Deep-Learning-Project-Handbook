@@ -1,84 +1,227 @@
-# RNN-1 — Multivariate Weather Forecasting
+# ECG5000 Anomaly Detection: Controlled Conv1D vs LSTM Autoencoders
 
-**Authors:** Sobhan Moghimi, Amirhossein Azarpour
+A leakage-aware anomaly-detection study on the **ECG5000** time-series dataset. The project compares a **Conv1D Autoencoder** and an **LSTM Autoencoder** under a controlled experimental protocol: both models are trained only on normal ECG beats, score samples using reconstruction mean squared error (MSE), and are evaluated on the same untouched final test set.
 
-Data Mining, Deep Learning (Dr. Hadi Farahani, Spring 2026). Core project, 25 points.
+> **Primary artifact:** `ecg_anomaly_detection_colab-1.ipynb`  
+> **Runtime:** Google Colab or a local Python environment with TensorFlow.
 
-**Files in this submission**
+## Overview
 
-- `weather_forecasting_colab.ipynb` — code
-- the PDF report — write-up
-- this README
+The task is to detect abnormal ECG beats from reconstruction error:
 
-Given the past **72 hourly readings** from the Jena Climate station, forecast the next **12 hours** of:
+- **Normal class:** ECG5000 class `1`
+- **Anomalous classes:** ECG5000 classes `2`–`5`
+- **Training protocol:** Train autoencoders exclusively on normal beats.
+- **Anomaly score:** Per-beat reconstruction MSE across the 140 time points.
+- **Core comparison:** Conv1D AE versus LSTM AE under matched data splits, preprocessing, training-only-on-normal policy, optimizer family, reconstruction loss, early-stopping policy, and threshold-calibration data.
 
-- temperature `T (degC)` (°C)
-- relative humidity `rh (%)` (percentage points)
+The notebook is deliberately designed as a controlled comparison—not as a claim that either architecture is universally best for ECG anomaly detection.
 
-## Original contribution
+## Research Question
 
-**Horizon-specific additive attention** over LSTM encoder states. Each forecast lead (1–12 h) has its own learned query. Hypothesis, stated before training: attention should help most at longer horizons by selecting recent trends and daily lags (24 / 48 / 72 h), not at 1 h where persistence is already strong.
+**Do convolutional local waveform features or recurrent temporal representations provide the better speed–quality trade-off for reconstruction-based anomaly detection on ECG5000?**
 
-**Result of the reported run.** Direct GRU is the best model. Attention is worse at 1–6 h and only catches up at 12 h (slightly best on 12 h humidity RMSE). The hypothesis is mostly rejected. Full numbers and discussion are in the PDF report.
+- The **Conv1D Autoencoder** uses convolutional filters to encode local, shift-tolerant waveform motifs.
+- The **LSTM Autoencoder** uses recurrent processing to encode the ordered temporal context of each beat.
 
-| Model | Params | Test NMAE ↓ | Test T MAE 1 h / 12 h |
-| --- | ---: | ---: | ---: |
-| Persistence | 0 | 0.514 | 0.643 / 4.188 °C |
-| Direct LSTM | 23,064 | 0.252 | 0.662 / 1.836 °C |
-| **Direct GRU** | **17,880** | **0.243** | **0.553 / 1.783 °C** |
-| Seq2Seq LSTM | 54,658 | 0.250 | 0.643 / 1.842 °C |
-| Horizon Attention LSTM | 47,170 | 0.255 | 0.833 / 1.806 °C |
+The final conclusion should be based on the generated final-test table: F1 under an identical threshold rule, precision, recall, Average Precision, parameter count, training time, anomaly-type recall, and failure cases.
 
-NMAE is mean MAE divided by each target’s training standard deviation. It is only a ranking score; °C and humidity points are never averaged as a physical-unit error.
+## Experimental Protocol
 
-The notebook is the source of truth. Do not edit results by hand; re-run it.
+The notebook follows a leakage-aware evaluation design:
 
-## How to reproduce
+1. Loads and combines the ECG5000 archive splits.
+2. Creates a reproducible, stratified **20% final test split**. This split is held out from model selection and threshold calibration.
+3. Splits the remaining development set into a labeled **calibration split** and a model-development split, stratified across the five original ECG classes.
+4. Keeps class-1 beats only from model-development data and divides them into normal training and normal validation subsets.
+5. Fits feature-wise standardization using **only normal training beats**.
+6. Trains each Autoencoder using only normalized normal training beats.
+7. Performs early stopping using normal-validation reconstruction loss only.
+8. Selects anomaly thresholds from non-test data.
+9. Evaluates once on the untouched final test set.
 
-1. Open `weather_forecasting_colab.ipynb` in Google Colab.
-2. Runtime → Change runtime type → **GPU**.
-3. Leave `FAST_MODE = False` and `SEED = 2026` (these are the reported settings).
-4. Run all cells top to bottom. The Jena dataset is downloaded automatically from the official Keras URL.
+This separation matters: neither final-test labels nor final-test reconstruction scores are used to choose a model, a training checkpoint, or a threshold.
 
-The notebook writes `/content/jena_rnn_outputs/` and offers `/content/jena_rnn_outputs.zip` for download. Figures used in the PDF are generated there.
+## Dataset
 
-Full mode takes on the order of **5–10 minutes** on a Colab GPU (four models, up to 30 epochs, early stopping). The reported run used TensorFlow 2.20.0.
+The project loads **ECG5000** through the [`aeon`](https://www.aeon-toolkit.org/) time-series toolkit; no Kaggle API key is required.
 
-For a smoke test only, set `FAST_MODE = True` (stride 3, 32 units, 10 epochs). Do not treat FAST numbers as the course result.
+| Property | Value |
+|---|---|
+| Dataset | ECG5000 |
+| Input | Univariate ECG beat time series |
+| Sequence length | 140 time points |
+| Original labels | 5 classes |
+| Normal class | 1 |
+| Anomaly classes | 2–5 |
+| Task | Binary normal-versus-anomaly detection |
 
-## Protocol (reported run)
+The notebook maps the original classes to the following interpretation:
 
-- Seed `2026` (`random`, NumPy, TensorFlow); deterministic ops requested
-- Chronological 70 / 15 / 15 split; scaler fit on training rows only
-- Lookback 72 h, horizon 12 h, stride 1, 19 input features
-- Shared training: Adam `1e-3`, batch 128, dropout 0.1, 64 units, MSE on standardized targets, early stopping on `val_loss` (patience 6)
-- Metrics: per-target, per-horizon MAE and RMSE after inverse transform
-- Model selection for the interval stretch uses **validation NMAE only**
+| Class | Interpretation |
+|---:|---|
+| 1 | Normal |
+| 2 | R-on-T PVC |
+| 3 | PVC |
+| 4 | SP/EB |
+| 5 | Unclassified |
 
-## What the notebook writes
+## Models
 
-After a full run, `jena_rnn_outputs/` contains:
+Both models receive a beat with shape `(140, 1)` and minimize reconstruction MSE.
 
-**Tables**
+| Model | Representation hypothesis |
+|---|---|
+| Conv1D Autoencoder | Short local waveform motifs can distinguish normal from anomalous morphology efficiently. |
+| LSTM Autoencoder | Sequential dependencies across the full beat improve reconstruction-based discrimination. |
 
-- `forecast_metrics.csv` — MAE / RMSE by model, split, target, horizon
-- `model_comparison.csv`, `metrics_aggregate_normalized.csv`
-- `training_summary.csv`, `split_summary.csv`
-- `interval_metrics.csv` — 90% validation-residual coverage and width
-- `attention_diagnostics.csv`, `error_vs_change.csv`, `failure_case_index.csv`
+The notebook exposes `FAST_MODE` for a practical Colab execution path. In this mode, model width and training duration are reduced; disable it for a more computationally intensive run.
 
-**Figures** (same plots as in the PDF)
+## Threshold Strategies
 
-- `figures/data_overview.png`
-- `figures/training_curves.png`
-- `figures/horizon_mae.png`, `figures/horizon_rmse.png`
-- `figures/prediction_examples.png`
-- `figures/attention_lookback_summary.png`, `figures/attention_heatmaps.png`
-- `figures/error_vs_weather_change.png`, `figures/failure_cases.png`
-- `figures/prediction_intervals.png`
+Each model receives two independently calibrated thresholds:
 
-## Data
+| Rule | Calibration source | Interpretation |
+|---|---|---|
+| **Normal-validation P95** | Scores of held-out normal validation beats | Threshold at the 95th percentile of normal reconstruction error; does not require anomaly labels. |
+| **Labeled-calibration F1 optimum** | Separate labeled calibration split | Threshold that maximizes F1 with representative normal and anomalous examples. |
 
-Jena Climate, Max Planck Institute for Biogeochemistry, via the Keras weather-forecasting example:
+The P95 rule is relevant when labeled anomalies are unavailable. The F1-optimal rule can be useful when representative labeled anomalies are available, but it may be sensitive to calibration-set prevalence and anomaly composition.
 
-https://keras.io/examples/timeseries/timeseries_weather_forecasting/
+## Evaluation
+
+### Classification metrics
+
+The final-test evaluation includes:
+
+- Precision
+- Recall / Sensitivity
+- F1-score
+- Specificity / True Negative Rate
+- Negative Predictive Value (NPV)
+- Average Precision
+- Confusion matrices
+- Precision–Recall curves
+
+### Diagnostic analysis
+
+The notebook also provides:
+
+- Final normal-versus-anomaly reconstruction-error distributions.
+- Per-anomaly-class detection performance for classes 2–5.
+- False-positive and false-negative waveform inspection.
+- Runtime and parameter-count comparison for Conv1D and LSTM models.
+
+### Reference baselines
+
+As additional reference models—not as part of the required neural comparison—the notebook fits:
+
+- One-Class SVM with RBF kernel
+- Isolation Forest
+
+Both baselines are trained on the same normalized normal-training data and use F1-optimized thresholds from the same labeled calibration split.
+
+## Installation
+
+### Google Colab
+
+Open the notebook in Colab and run the installation cell:
+
+```python
+!pip install aeon
+```
+
+The notebook installs or imports the remaining dependencies through the Colab environment.
+
+### Local setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate   # Windows
+
+pip install aeon tensorflow numpy pandas matplotlib seaborn scikit-learn
+pip install jupyter
+```
+
+## Usage
+
+Start Jupyter and run the notebook sequentially:
+
+```bash
+jupyter lab
+```
+
+Then open:
+
+```text
+ecg_anomaly_detection_colab-1.ipynb
+```
+
+### Recommended execution order
+
+1. Install `aeon`.
+2. Run the configuration and reproducibility cell.
+3. Load ECG5000 and inspect the exploratory plots.
+4. Create the leakage-safe train/validation/calibration/final-test splits.
+5. Build and train the Conv1D and LSTM Autoencoders.
+6. Calibrate the P95 and F1-optimal thresholds without using final-test data.
+7. Run final-test classification, per-class, and failure-case analyses.
+8. Optionally run One-Class SVM and Isolation Forest baselines.
+9. Export the reproducibility metadata, model artifacts, scores, and ZIP archive.
+
+## Outputs
+
+The notebook creates artifacts such as:
+
+```text
+artifacts/
+├── Conv1D_AE_best.keras
+├── LSTM_AE_best.keras
+├── config.json
+├── scaler_statistics.npz
+├── final_test_scores.csv
+├── results.csv
+└── ecg5000_anomaly_detection_artifacts.zip
+```
+
+Exact output filenames may vary slightly with notebook configuration.
+
+## Reproducibility
+
+The notebook fixes random seeds across Python, NumPy, and TensorFlow, records the experiment configuration, saves scaler statistics, persists model checkpoints, and exports final prediction scores and result tables.
+
+For a quick Colab run, keep:
+
+```python
+FAST_MODE = True
+```
+
+For a more thorough run, set:
+
+```python
+FAST_MODE = False
+```
+
+and expect longer training time.
+
+## Limitations
+
+- ECG5000 consists of short, pre-segmented, preprocessed beats; results may not transfer to continuous, noisy, multi-lead, or differently sampled clinical ECG streams.
+- Reconstruction error is not guaranteed to be higher for all anomalies. A sufficiently expressive autoencoder can reconstruct some abnormal beats well, producing false negatives.
+- F1 is prevalence-dependent and weights precision and recall equally. Real clinical or operational deployments may require sensitivity constraints, cost-sensitive thresholding, calibrated alert rates, or patient-level metrics.
+- Patient identifiers are not available in the dataset. The beat-level stratified split cannot rule out patient-level information leakage if multiple beats came from the same patient.
+- A single split and random seed do not quantify uncertainty. Repeated grouped splits, bootstrapping, and external validation would provide stronger evidence.
+- This repository is an educational/research implementation and is **not** a clinical decision-support system.
+
+## Technologies
+
+`Python` · `TensorFlow / Keras` · `aeon` · `NumPy` · `Pandas` · `Scikit-learn` · `Matplotlib` · `Seaborn` · `Google Colab` · `Jupyter`
+
+## Citation
+
+If you use the ECG5000 dataset, cite its original source and follow the relevant dataset and toolkit terms. This repository does not redistribute the dataset.
+
+## License
+
+Add a license appropriate for your intended use before public release (for example, MIT for permissive code reuse).
